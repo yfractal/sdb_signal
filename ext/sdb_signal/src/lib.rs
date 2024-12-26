@@ -8,17 +8,21 @@ use std::mem::zeroed;
 use std::ptr;
 use std::thread::sleep;
 use std::time::Duration;
+use std::sync::Mutex;
+use lazy_static::lazy_static;
+
+const MAX_STACK_DEPTH: usize = 2048;
+
+lazy_static! {
+    static ref BUFFER: Mutex<[VALUE; MAX_STACK_DEPTH]> = Mutex::new([0 as VALUE; MAX_STACK_DEPTH]);
+    static ref LINES: Mutex<[i32; MAX_STACK_DEPTH]> = Mutex::new([0; MAX_STACK_DEPTH]);
+}
 
 extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    let mut buff: [VALUE; 10] = [0 as VALUE; 10];
-    let mut lines: [i32; 10] = [0; 10];
-    let frames = unsafe { rb_profile_frames(0, 10, buff.as_mut_ptr(), lines.as_mut_ptr()) };
+    let mut buffer = BUFFER.lock().unwrap();
+    let mut lines = LINES.lock().unwrap();
 
-    println!("Signal received! Number of frames: {}", frames);
-    for i in 0..frames as usize {
-        println!("Frame {}: VALUE = {:?}, Line = {}", i, buff[i], lines[i]);
-    }
-    println!("Signal received!");
+    unsafe { rb_profile_frames(0, MAX_STACK_DEPTH as i32, buffer.as_mut_ptr(), lines.as_mut_ptr()) };
 }
 
 fn setup_signal_handler() {
@@ -33,7 +37,7 @@ fn setup_signal_handler() {
 
 extern "C" fn scheduler_func(thread: *mut libc::c_void) -> *mut libc::c_void {
     loop {
-        sleep(Duration::from_millis(1000));
+        sleep(Duration::from_millis(1));
         unsafe {
             pthread_kill(thread as pthread_t, SIGPROF);
         }
