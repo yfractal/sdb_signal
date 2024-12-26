@@ -37,10 +37,16 @@ fn start_scheduler() {
     }
 }
 
+fn sleep_with_gvl() {
+    sleep(Duration::from_secs(60 * 10));
+}
+
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("SdbSignal")?;
     module.define_singleton_method("setup_signal_handler", function!(setup_signal_handler, 0))?;
     module.define_singleton_method("start_scheduler", function!(start_scheduler, 0))?;
+    module.define_singleton_method("sleep_with_gvl", function!(sleep_with_gvl, 0))?;
+
     Ok(())
 }
