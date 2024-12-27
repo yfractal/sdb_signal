@@ -3,7 +3,7 @@ use libc::{
     SA_SIGINFO, SIGPROF,
 };
 use magnus::{function, prelude::*, Error, Ruby};
-use rb_sys::{rb_profile_frames, VALUE};
+use rb_sys::VALUE;
 use std::mem::zeroed;
 use std::ptr;
 use std::thread::sleep;
@@ -19,10 +19,12 @@ lazy_static! {
 }
 
 extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    let mut buffer = BUFFER.lock().unwrap();
-    let mut lines = LINES.lock().unwrap();
+    // let current_thread = get_current_thread_id();
+    // println!("Signal received {:?}", current_thread);
+    // let mut buffer = BUFFER.lock().unwrap();
+    // let mut lines = LINES.lock().unwrap();
 
-    unsafe { rb_profile_frames(0, MAX_STACK_DEPTH as i32, buffer.as_mut_ptr(), lines.as_mut_ptr()) };
+    // unsafe { rb_profile_frames(0, MAX_STACK_DEPTH as i32, buffer.as_mut_ptr(), lines.as_mut_ptr()) };
 }
 
 fn setup_signal_handler() {
@@ -52,6 +54,7 @@ fn start_scheduler() {
     unsafe {
         let mut thread: pthread_t = zeroed();
         let current_thread = get_current_thread_id();
+
         pthread_create(
             &mut thread,
             ptr::null(),
@@ -61,8 +64,27 @@ fn start_scheduler() {
     }
 }
 
+extern "C" fn star_thread_func(_: *mut libc::c_void) -> *mut libc::c_void {
+    start_scheduler();
+    sleep(Duration::from_secs(60 * 60));
+    ptr::null_mut()
+}
+
+fn start_thread() {
+    unsafe {
+        let mut thread: pthread_t = zeroed();
+
+        pthread_create(
+            &mut thread,
+            ptr::null(),
+            star_thread_func,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
 fn sleep_with_gvl() {
-    sleep(Duration::from_secs(60 * 10));
+    sleep(Duration::from_secs(60 * 60));
 }
 
 #[magnus::init]
@@ -71,6 +93,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method("setup_signal_handler", function!(setup_signal_handler, 0))?;
     module.define_singleton_method("start_scheduler", function!(start_scheduler, 0))?;
     module.define_singleton_method("sleep_with_gvl", function!(sleep_with_gvl, 0))?;
+    module.define_singleton_method("start_thread", function!(start_thread, 0))?;
 
     Ok(())
 }

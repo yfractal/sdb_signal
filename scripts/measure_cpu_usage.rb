@@ -1,7 +1,5 @@
-require 'sdb_signal'
-
-
 require 'bundler/inline'
+require 'sdb_signal'
 
 gemfile do
   source 'https://rubygems.org'
