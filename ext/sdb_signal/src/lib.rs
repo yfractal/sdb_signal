@@ -5,8 +5,8 @@ use libc::{
 };
 use magnus::{function, prelude::*, Error, Ruby};
 use rb_sys::{
-    rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_thread_frames, rb_profile_frame_path, rb_profile_frame_full_label, Qtrue,
-    RARRAY_LEN, VALUE,
+    rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_frame_full_label,
+    rb_profile_frame_path, rb_profile_thread_frames, Qtrue, RARRAY_LEN, VALUE,
 };
 use std::mem::zeroed;
 use std::ptr;
@@ -39,9 +39,6 @@ pub fn arvg_to_ptr(val: &[VALUE]) -> *const VALUE {
 }
 
 unsafe extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    // let current_thread: usize = get_current_thread_id();
-    // println!("Signal received {:?}", current_thread);
-
     if let Ok(data) = SCHEDULER_DATA.read() {
         let threads_count = RARRAY_LEN(data.rb_threads) as isize;
         let mut i = 0;
@@ -64,13 +61,11 @@ unsafe extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut lib
 
             while j < frames_count {
                 let frame = buffer[j as usize];
-                rb_profile_frame_full_label(frame as VALUE);
+                rb_profile_frame_full_label(frame as VALUE); // mainly cost
                 rb_profile_frame_path(frame as VALUE);
 
                 j += 1
-
             }
-            // println!("frames {:?}", frames);
 
             i += 1;
         }
