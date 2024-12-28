@@ -94,6 +94,7 @@ end
 users = 0.upto(100).map do |i|
   User.create!(login: "user#{i}")
 end
+
 0.upto(100) do |i|
   post = Post.create!(title: "Post number #{i}", body: "blog " * 50, likes: ((i * 1337) % 30), user: users.sample)
   5.times do
@@ -108,6 +109,7 @@ class HomeController < ActionController::Base
     SdbSignal.setup_signal_handler
     SdbSignal.start_scheduler
     SdbSignal.sleep_with_gvl
+
     render json: posts, include: [:user, comments: { include: :user } ]
   end
 end
