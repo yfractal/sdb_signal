@@ -4,10 +4,13 @@ use libc::{
     SA_RESTART, SA_SIGINFO, SIGPROF,
 };
 use magnus::{function, prelude::*, Error, Ruby};
-use rb_sys::{rb_define_module, rb_define_singleton_method, Qtrue, VALUE};
+use rb_sys::{
+    rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_thread_frames, Qtrue,
+    RARRAY_LEN, VALUE,
+};
 use std::mem::zeroed;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -23,14 +26,44 @@ struct SchedulerData {
     rb_threads: VALUE,
 }
 
-extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+lazy_static! {
+    static ref SCHEDULER_DATA: RwLock<SchedulerData> = RwLock::new(SchedulerData {
+        thread: 0,
+        rb_threads: 0 as VALUE,
+    });
+}
+
+#[inline]
+pub fn arvg_to_ptr(val: &[VALUE]) -> *const VALUE {
+    val as *const [VALUE] as *const VALUE
+}
+
+unsafe extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
     let current_thread = get_current_thread_id();
     println!("Signal received {:?}", current_thread);
 
-    // let mut buffer = BUFFER.lock().unwrap();
-    // let mut lines = LINES.lock().unwrap();
+    if let Ok(data) = SCHEDULER_DATA.read() {
+        let threads_count = RARRAY_LEN(data.rb_threads) as isize;
+        let mut i = 0;
+        while i < threads_count {
+            let mut buffer = BUFFER.lock().unwrap();
+            let mut lines = LINES.lock().unwrap();
 
-    // unsafe { rb_profile_frames(0, MAX_STACK_DEPTH as i32, buffer.as_mut_ptr(), lines.as_mut_ptr()) };
+            let argv = &[rb_int2inum(i)];
+            let rb_thread = rb_sys::rb_ary_aref(1, arvg_to_ptr(argv), data.rb_threads);
+
+            let frames = rb_profile_thread_frames(
+                rb_thread,
+                0,
+                MAX_STACK_DEPTH as i32,
+                buffer.as_mut_ptr(),
+                lines.as_mut_ptr(),
+            );
+            println!("frames {:?}", frames);
+
+            i += 1;
+        }
+    }
 }
 
 fn setup_signal_handler() {
@@ -43,10 +76,13 @@ fn setup_signal_handler() {
     }
 }
 
-extern "C" fn scheduler_func(data_ptr: *mut libc::c_void) -> *mut libc::c_void {
+extern "C" fn scheduler_func(_: *mut libc::c_void) -> *mut libc::c_void {
     unsafe {
-        let scheduler_data = Box::from_raw(data_ptr as *mut SchedulerData);
-        let thread = scheduler_data.thread;
+        let data = SCHEDULER_DATA.read().unwrap();
+        let thread = data.thread;
+        // actually, it's ok to hold the read lock as no other thread will write to it
+        // but why not release it earlier
+        drop(data);
 
         loop {
             sleep(Duration::from_millis(1));
@@ -60,17 +96,20 @@ fn get_current_thread_id() -> pthread_t {
 }
 
 unsafe extern "C" fn start_scheduler_for_current_thread(_module: VALUE, threads: VALUE) -> VALUE {
-    let data = Box::new(SchedulerData {
-        thread: get_current_thread_id(),
-        rb_threads: threads,
-    });
-
-    let data_ptr = Box::into_raw(data) as *mut libc::c_void;
+    if let Ok(mut data) = SCHEDULER_DATA.write() {
+        data.thread = get_current_thread_id();
+        data.rb_threads = threads;
+    }
 
     unsafe {
         let mut thread: pthread_t = zeroed();
 
-        pthread_create(&mut thread, ptr::null(), scheduler_func, data_ptr);
+        pthread_create(
+            &mut thread,
+            ptr::null(),
+            scheduler_func,
+            std::ptr::null_mut(),
+        );
     }
 
     Qtrue as VALUE
