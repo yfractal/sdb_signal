@@ -1,15 +1,15 @@
+use lazy_static::lazy_static;
 use libc::{
-    pthread_create, pthread_kill, pthread_self, pthread_t, sigaction, sigemptyset, SA_RESTART,
-    SA_SIGINFO, SIGPROF,
+    c_char, pthread_create, pthread_kill, pthread_self, pthread_t, sigaction, sigemptyset,
+    SA_RESTART, SA_SIGINFO, SIGPROF,
 };
 use magnus::{function, prelude::*, Error, Ruby};
-use rb_sys::VALUE;
+use rb_sys::{rb_define_module, rb_define_singleton_method, Qtrue, VALUE};
 use std::mem::zeroed;
 use std::ptr;
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
-use std::sync::Mutex;
-use lazy_static::lazy_static;
 
 const MAX_STACK_DEPTH: usize = 2048;
 
@@ -18,9 +18,15 @@ lazy_static! {
     static ref LINES: Mutex<[i32; MAX_STACK_DEPTH]> = Mutex::new([0; MAX_STACK_DEPTH]);
 }
 
+struct SchedulerData {
+    thread: pthread_t,
+    rb_threads: VALUE,
+}
+
 extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    // let current_thread = get_current_thread_id();
-    // println!("Signal received {:?}", current_thread);
+    let current_thread = get_current_thread_id();
+    println!("Signal received {:?}", current_thread);
+
     // let mut buffer = BUFFER.lock().unwrap();
     // let mut lines = LINES.lock().unwrap();
 
@@ -37,10 +43,13 @@ fn setup_signal_handler() {
     }
 }
 
-extern "C" fn scheduler_func(thread: *mut libc::c_void) -> *mut libc::c_void {
-    loop {
-        sleep(Duration::from_millis(1));
-        unsafe {
+extern "C" fn scheduler_func(data_ptr: *mut libc::c_void) -> *mut libc::c_void {
+    unsafe {
+        let scheduler_data = Box::from_raw(data_ptr as *mut SchedulerData);
+        let thread = scheduler_data.thread;
+
+        loop {
+            sleep(Duration::from_millis(1));
             pthread_kill(thread as pthread_t, SIGPROF);
         }
     }
@@ -50,37 +59,21 @@ fn get_current_thread_id() -> pthread_t {
     unsafe { pthread_self() }
 }
 
-fn start_scheduler() {
-    unsafe {
-        let mut thread: pthread_t = zeroed();
-        let current_thread = get_current_thread_id();
+unsafe extern "C" fn start_scheduler_for_current_thread(_module: VALUE, threads: VALUE) -> VALUE {
+    let data = Box::new(SchedulerData {
+        thread: get_current_thread_id(),
+        rb_threads: threads,
+    });
 
-        pthread_create(
-            &mut thread,
-            ptr::null(),
-            scheduler_func,
-            current_thread as *mut libc::c_void,
-        );
-    }
-}
+    let data_ptr = Box::into_raw(data) as *mut libc::c_void;
 
-extern "C" fn star_thread_func(_: *mut libc::c_void) -> *mut libc::c_void {
-    start_scheduler();
-    sleep(Duration::from_secs(60 * 60));
-    ptr::null_mut()
-}
-
-fn start_thread() {
     unsafe {
         let mut thread: pthread_t = zeroed();
 
-        pthread_create(
-            &mut thread,
-            ptr::null(),
-            star_thread_func,
-            std::ptr::null_mut(),
-        );
+        pthread_create(&mut thread, ptr::null(), scheduler_func, data_ptr);
     }
+
+    Qtrue as VALUE
 }
 
 fn sleep_with_gvl() {
@@ -91,9 +84,24 @@ fn sleep_with_gvl() {
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("SdbSignal")?;
     module.define_singleton_method("setup_signal_handler", function!(setup_signal_handler, 0))?;
-    module.define_singleton_method("start_scheduler", function!(start_scheduler, 0))?;
     module.define_singleton_method("sleep_with_gvl", function!(sleep_with_gvl, 0))?;
-    module.define_singleton_method("start_thread", function!(start_thread, 0))?;
+
+    unsafe {
+        let m = rb_define_module("SdbSignal\0".as_ptr() as *const c_char);
+
+        let start_scheduler_for_current_thread_callback =
+            std::mem::transmute::<
+                unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
+                unsafe extern "C" fn() -> VALUE,
+            >(start_scheduler_for_current_thread);
+
+        rb_define_singleton_method(
+            m,
+            "start_scheduler_for_current_thread\0".as_ptr() as _,
+            Some(start_scheduler_for_current_thread_callback),
+            1,
+        );
+    };
 
     Ok(())
 }

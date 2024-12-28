@@ -1,10 +1,4 @@
 require 'sdb_signal'
 SdbSignal.setup_signal_handler
-SdbSignal.start_thread
-SdbSignal.start_thread
-SdbSignal.start_thread
-SdbSignal.start_thread
-SdbSignal.start_thread
-
-sleep 10000
-# SdbSignal.sleep_with_gvl
+SdbSignal.start_scheduler_for_current_thread([])
+SdbSignal.sleep_with_gvl
