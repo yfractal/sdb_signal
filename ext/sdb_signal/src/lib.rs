@@ -101,7 +101,7 @@ fn get_current_thread_id() -> pthread_t {
     unsafe { pthread_self() }
 }
 
-unsafe extern "C" fn start_scheduler_for_current_thread(_module: VALUE, threads: VALUE) -> VALUE {
+unsafe extern "C" fn start_scheduler(_module: VALUE, threads: VALUE) -> VALUE {
     if let Ok(mut data) = SCHEDULER_DATA.write() {
         data.thread = get_current_thread_id();
         data.rb_threads = threads;
@@ -134,16 +134,16 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     unsafe {
         let m = rb_define_module("SdbSignal\0".as_ptr() as *const c_char);
 
-        let start_scheduler_for_current_thread_callback =
+        let start_scheduler_callback =
             std::mem::transmute::<
                 unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
                 unsafe extern "C" fn() -> VALUE,
-            >(start_scheduler_for_current_thread);
+            >(start_scheduler);
 
         rb_define_singleton_method(
             m,
-            "start_scheduler_for_current_thread\0".as_ptr() as _,
-            Some(start_scheduler_for_current_thread_callback),
+            "start_scheduler\0".as_ptr() as _,
+            Some(start_scheduler_callback),
             1,
         );
     };

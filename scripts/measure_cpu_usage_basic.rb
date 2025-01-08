@@ -21,5 +21,5 @@ end
 sleep 1
 
 SdbSignal.setup_signal_handler
-SdbSignal.start_scheduler_for_current_thread(threads)
+SdbSignal.start_scheduler(threads)
 SdbSignal.sleep_with_gvl
