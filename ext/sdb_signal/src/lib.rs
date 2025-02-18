@@ -38,7 +38,10 @@ pub fn arvg_to_ptr(val: &[VALUE]) -> *const VALUE {
     val as *const [VALUE] as *const VALUE
 }
 
-unsafe extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+// stack_scanner fetches all frames through `rb_profile_thread_frames`
+// and queries the frame's full label and frame path.
+// But, it does not log this data.
+unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
     if let Ok(data) = SCHEDULER_DATA.read() {
         let threads_count = RARRAY_LEN(data.rb_threads) as isize;
         let mut i = 0;
@@ -75,7 +78,7 @@ unsafe extern "C" fn signal_handler(_: i32, _: *mut libc::siginfo_t, _: *mut lib
 fn setup_signal_handler() {
     unsafe {
         let mut sa: sigaction = zeroed();
-        sa.sa_sigaction = signal_handler as usize;
+        sa.sa_sigaction = stack_scanner as usize;
         sa.sa_flags = SA_RESTART | SA_SIGINFO;
         sigemptyset(&mut sa.sa_mask);
         sigaction(SIGPROF, &sa, std::ptr::null_mut());
@@ -101,6 +104,8 @@ fn get_current_thread_id() -> pthread_t {
     unsafe { pthread_self() }
 }
 
+// start_scheduler creates a new thread through pthread_create which triggers stack scanning every millisecond.
+// threads: the threads to scan
 unsafe extern "C" fn start_scheduler(_module: VALUE, threads: VALUE) -> VALUE {
     if let Ok(mut data) = SCHEDULER_DATA.write() {
         data.thread = get_current_thread_id();
