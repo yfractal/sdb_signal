@@ -24,12 +24,14 @@ lazy_static! {
 struct SchedulerData {
     thread: pthread_t,
     rb_threads: VALUE,
+    threads: Vec<pthread_t>,
 }
 
 lazy_static! {
     static ref SCHEDULER_DATA: RwLock<SchedulerData> = RwLock::new(SchedulerData {
         thread: 0,
         rb_threads: 0 as VALUE,
+        threads: vec![],
     });
 }
 
@@ -61,6 +63,7 @@ unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc
             );
 
             let mut j = 0;
+            // println!("frames_count={frames_count}");
 
             while j < frames_count {
                 let frame = buffer[j as usize];
@@ -87,15 +90,14 @@ fn setup_signal_handler() {
 
 extern "C" fn scheduler_func(_: *mut libc::c_void) -> *mut libc::c_void {
     unsafe {
-        let data = SCHEDULER_DATA.read().unwrap();
-        let thread = data.thread;
-        // actually, it's ok to hold the read lock as no other thread will write to it
-        // but why not release it earlier
-        drop(data);
-
         loop {
-            sleep(Duration::from_millis(1));
-            pthread_kill(thread as pthread_t, SIGPROF);
+            sleep(Duration::from_millis(100));
+            let data: std::sync::RwLockReadGuard<'_, SchedulerData> =
+                SCHEDULER_DATA.read().unwrap();
+
+            for thread in &data.threads {
+                pthread_kill(*thread as pthread_t, SIGPROF);
+            }
         }
     }
 }
@@ -130,6 +132,17 @@ fn sleep_with_gvl() {
     sleep(Duration::from_secs(60 * 60));
 }
 
+unsafe extern "C" fn register_thread(_module: VALUE, threads: VALUE) -> VALUE {
+    let thread = get_current_thread_id();
+    if let Ok(mut data) = SCHEDULER_DATA.write() {
+        println!("push thread={thread}");
+        data.rb_threads = threads;
+        data.threads.push(thread);
+    }
+
+    Qtrue as VALUE
+}
+
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("SdbSignal")?;
@@ -139,16 +152,27 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     unsafe {
         let m = rb_define_module("SdbSignal\0".as_ptr() as *const c_char);
 
-        let start_scheduler_callback =
-            std::mem::transmute::<
-                unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
-                unsafe extern "C" fn() -> VALUE,
-            >(start_scheduler);
+        let start_scheduler_callback = std::mem::transmute::<
+            unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
+            unsafe extern "C" fn() -> VALUE,
+        >(start_scheduler);
 
         rb_define_singleton_method(
             m,
             "start_scheduler\0".as_ptr() as _,
             Some(start_scheduler_callback),
+            1,
+        );
+
+        let register_thread_callback = std::mem::transmute::<
+            unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
+            unsafe extern "C" fn() -> VALUE,
+        >(register_thread);
+
+        rb_define_singleton_method(
+            m,
+            "register_thread\0".as_ptr() as _,
+            Some(register_thread_callback),
             1,
         );
     };
