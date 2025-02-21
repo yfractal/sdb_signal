@@ -1,3 +1,5 @@
+mod buffer;
+
 use lazy_static::lazy_static;
 use libc::{
     c_char, pthread_create, pthread_kill, pthread_self, pthread_t, sigaction, sigemptyset,
@@ -14,11 +16,14 @@ use std::sync::{Mutex, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
 
+use crate::buffer::*;
+
 const MAX_STACK_DEPTH: usize = 2048;
 
 lazy_static! {
     static ref BUFFER: Mutex<[VALUE; MAX_STACK_DEPTH]> = Mutex::new([0 as VALUE; MAX_STACK_DEPTH]);
     static ref LINES: Mutex<[i32; MAX_STACK_DEPTH]> = Mutex::new([0; MAX_STACK_DEPTH]);
+    static ref ISEQ_BUFFER: Mutex<Buffer>= Mutex::new(Buffer::new());
 }
 
 struct SchedulerData {
@@ -47,9 +52,10 @@ unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc
     if let Ok(data) = SCHEDULER_DATA.read() {
         let threads_count = RARRAY_LEN(data.rb_threads) as isize;
         let mut i = 0;
+        let mut iseq_buffer = ISEQ_BUFFER.lock().unwrap();
         while i < threads_count {
             let mut buffer = BUFFER.lock().unwrap();
-            let mut lines = LINES.lock().unwrap();
+            let mut lines: std::sync::MutexGuard<'_, [i32; 2048]> = LINES.lock().unwrap();
 
             let argv = &[rb_int2inum(i)];
             let rb_thread = rb_sys::rb_ary_aref(1, arvg_to_ptr(argv), data.rb_threads);
@@ -66,7 +72,8 @@ unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc
             // println!("frames_count={frames_count}");
 
             while j < frames_count {
-                let _ = buffer[j as usize];
+                let frame = buffer[j as usize];
+                iseq_buffer.push(frame);
                 // rb_profile_frame_full_label(frame as VALUE); // mainly cost
                 // rb_profile_frame_path(frame as VALUE);
 
@@ -75,6 +82,8 @@ unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc
 
             i += 1;
         }
+
+        iseq_buffer.push_seperator();
     }
 }
 
