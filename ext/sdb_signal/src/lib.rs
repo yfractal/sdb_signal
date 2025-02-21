@@ -66,9 +66,9 @@ unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc
             // println!("frames_count={frames_count}");
 
             while j < frames_count {
-                let frame = buffer[j as usize];
-                rb_profile_frame_full_label(frame as VALUE); // mainly cost
-                rb_profile_frame_path(frame as VALUE);
+                let _ = buffer[j as usize];
+                // rb_profile_frame_full_label(frame as VALUE); // mainly cost
+                // rb_profile_frame_path(frame as VALUE);
 
                 j += 1
             }
@@ -91,7 +91,7 @@ fn setup_signal_handler() {
 extern "C" fn scheduler_func(_: *mut libc::c_void) -> *mut libc::c_void {
     unsafe {
         loop {
-            sleep(Duration::from_millis(100));
+            sleep(Duration::from_millis(1));
             let data: std::sync::RwLockReadGuard<'_, SchedulerData> =
                 SCHEDULER_DATA.read().unwrap();
 
