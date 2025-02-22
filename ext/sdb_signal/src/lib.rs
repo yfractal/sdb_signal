@@ -15,6 +15,7 @@ use std::ptr;
 use std::sync::{Mutex, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::buffer::*;
 
@@ -24,6 +25,7 @@ lazy_static! {
     static ref BUFFER: Mutex<[VALUE; MAX_STACK_DEPTH]> = Mutex::new([0 as VALUE; MAX_STACK_DEPTH]);
     static ref LINES: Mutex<[i32; MAX_STACK_DEPTH]> = Mutex::new([0; MAX_STACK_DEPTH]);
     static ref ISEQ_BUFFER: Mutex<Buffer>= Mutex::new(Buffer::new());
+    static ref COUNTER: AtomicUsize = AtomicUsize::new(0);
 }
 
 struct SchedulerData {
@@ -45,10 +47,15 @@ pub fn arvg_to_ptr(val: &[VALUE]) -> *const VALUE {
     val as *const [VALUE] as *const VALUE
 }
 
+fn get_counter_value() -> usize {
+    COUNTER.load(Ordering::SeqCst)
+}
+
 // stack_scanner fetches all frames through `rb_profile_thread_frames`
 // and queries the frame's full label and frame path.
 // But, it does not log this data.
 unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    COUNTER.fetch_add(1, Ordering::SeqCst);
     if let Ok(data) = SCHEDULER_DATA.read() {
         let threads_count = RARRAY_LEN(data.rb_threads) as isize;
         let mut i = 0;
@@ -141,6 +148,10 @@ fn sleep_with_gvl() {
     sleep(Duration::from_secs(60 * 60));
 }
 
+fn print_counter() {
+    println!("counter={}", get_counter_value());
+}
+
 unsafe extern "C" fn register_thread(_module: VALUE, threads: VALUE) -> VALUE {
     let thread = get_current_thread_id();
     if let Ok(mut data) = SCHEDULER_DATA.write() {
@@ -157,6 +168,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("SdbSignal")?;
     module.define_singleton_method("setup_signal_handler", function!(setup_signal_handler, 0))?;
     module.define_singleton_method("sleep_with_gvl", function!(sleep_with_gvl, 0))?;
+    module.define_singleton_method("print_counter", function!(print_counter, 0))?;
 
     unsafe {
         let m = rb_define_module("SdbSignal\0".as_ptr() as *const c_char);

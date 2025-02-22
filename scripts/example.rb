@@ -13,14 +13,10 @@ def test(stacks_depth, n)
   end
 end
 
-thread =Thread.new {
-  threads = [Thread.current]
-  SdbSignal.register_thread(threads)
-  sleep 1
-  test(150, 1000_000_000)
-}
+threads = [Thread.current]
+SdbSignal.register_thread(threads)
+SdbSignal.setup_signal_handler
+SdbSignal.start_scheduler(threads)
 
-# SdbSignal.setup_signal_handler
-# SdbSignal.start_scheduler([thread])
-
-sleep 10
+test(150, 1000_000_000)
+SdbSignal.print_counter
