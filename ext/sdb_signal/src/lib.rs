@@ -12,20 +12,22 @@ use rb_sys::{
 };
 use std::mem::zeroed;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::thread::sleep;
-use std::time::Duration;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::buffer::*;
 
 const MAX_STACK_DEPTH: usize = 2048;
+const ONE_MILLISECOND_NS: u64 = 1_000_000; // 1ms in nanoseconds
 
 lazy_static! {
     static ref BUFFER: Mutex<[VALUE; MAX_STACK_DEPTH]> = Mutex::new([0 as VALUE; MAX_STACK_DEPTH]);
     static ref LINES: Mutex<[i32; MAX_STACK_DEPTH]> = Mutex::new([0; MAX_STACK_DEPTH]);
-    static ref ISEQ_BUFFER: Mutex<Buffer>= Mutex::new(Buffer::new());
+    static ref ISEQ_BUFFER: Mutex<Buffer> = Mutex::new(Buffer::new());
     static ref COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static ref SAMPLING_INTERVAL_NS: AtomicUsize = AtomicUsize::new(ONE_MILLISECOND_NS as usize);
 }
 
 struct SchedulerData {
@@ -107,10 +109,21 @@ fn setup_signal_handler() {
 extern "C" fn scheduler_func(_: *mut libc::c_void) -> *mut libc::c_void {
     unsafe {
         loop {
-            sleep(Duration::from_millis(1));
-            let data: std::sync::RwLockReadGuard<'_, SchedulerData> =
-                SCHEDULER_DATA.read().unwrap();
+            let interval = SAMPLING_INTERVAL_NS.load(Ordering::Relaxed) as u64;
 
+            if interval >= ONE_MILLISECOND_NS {
+                sleep(Duration::from_nanos(interval));
+            } else {
+                // For sub-millisecond intervals, use busy loop as on linux or macos, they can't sleep for less than 1ms
+                let start = Instant::now();
+                let target = start + Duration::from_nanos(interval);
+
+                while Instant::now() < target {
+                    std::hint::spin_loop();
+                }
+            }
+
+            let data = SCHEDULER_DATA.read().unwrap();
             for thread in &data.threads {
                 pthread_kill(*thread as pthread_t, SIGPROF);
             }
@@ -163,12 +176,22 @@ unsafe extern "C" fn register_thread(_module: VALUE, threads: VALUE) -> VALUE {
     Qtrue as VALUE
 }
 
+fn set_sampling_interval(nanos: usize) {
+    SAMPLING_INTERVAL_NS.store(nanos, Ordering::Relaxed);
+}
+
+fn get_sampling_interval() -> usize {
+    SAMPLING_INTERVAL_NS.load(Ordering::Relaxed)
+}
+
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("SdbSignal")?;
     module.define_singleton_method("setup_signal_handler", function!(setup_signal_handler, 0))?;
     module.define_singleton_method("sleep_with_gvl", function!(sleep_with_gvl, 0))?;
     module.define_singleton_method("print_counter", function!(print_counter, 0))?;
+    module.define_singleton_method("set_sampling_interval", function!(set_sampling_interval, 1))?;
+    module.define_singleton_method("get_sampling_interval", function!(get_sampling_interval, 0))?;
 
     unsafe {
         let m = rb_define_module("SdbSignal\0".as_ptr() as *const c_char);
