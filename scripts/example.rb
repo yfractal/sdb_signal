@@ -13,10 +13,15 @@ def test(stacks_depth, n)
   end
 end
 
-threads = [Thread.current]
-SdbSignal.register_thread(threads)
+# SdbSignal.set_sampling_interval(100_000)
+# SdbSignal.set_sampling_interval(10_000)
+SdbSignal.set_sampling_interval(1_000)
+
+puts "#{SdbSignal.get_sampling_interval} ns"
+
+SdbSignal.register_current_thread
 SdbSignal.setup_signal_handler
-SdbSignal.start_scheduler(threads)
+SdbSignal.start_scheduler
 
 test(150, 1000_000_000)
 SdbSignal.print_counter

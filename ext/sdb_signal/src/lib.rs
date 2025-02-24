@@ -10,6 +10,7 @@ use rb_sys::{
     rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_frame_full_label,
     rb_profile_frame_path, rb_profile_thread_frames, Qtrue, RARRAY_LEN, VALUE,
 };
+use std::collections::HashMap;
 use std::mem::zeroed;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,16 +32,14 @@ lazy_static! {
 }
 
 struct SchedulerData {
-    thread: pthread_t,
-    rb_threads: VALUE,
     threads: Vec<pthread_t>,
+    thread_to_value: HashMap<pthread_t, VALUE>,
 }
 
 lazy_static! {
     static ref SCHEDULER_DATA: RwLock<SchedulerData> = RwLock::new(SchedulerData {
-        thread: 0,
-        rb_threads: 0 as VALUE,
         threads: vec![],
+        thread_to_value: HashMap::new(),
     });
 }
 
@@ -58,38 +57,32 @@ fn get_counter_value() -> usize {
 // But, it does not log this data.
 unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
     COUNTER.fetch_add(1, Ordering::SeqCst);
+
     if let Ok(data) = SCHEDULER_DATA.read() {
-        let threads_count = RARRAY_LEN(data.rb_threads) as isize;
-        let mut i = 0;
+        let rb_thread = data.thread_to_value.get(&get_current_thread_id()).unwrap();
+
         let mut iseq_buffer = ISEQ_BUFFER.lock().unwrap();
-        while i < threads_count {
-            let mut buffer = BUFFER.lock().unwrap();
-            let mut lines: std::sync::MutexGuard<'_, [i32; 2048]> = LINES.lock().unwrap();
+        let mut buffer = BUFFER.lock().unwrap();
+        let mut lines: std::sync::MutexGuard<'_, [i32; 2048]> = LINES.lock().unwrap();
 
-            let argv = &[rb_int2inum(i)];
-            let rb_thread = rb_sys::rb_ary_aref(1, arvg_to_ptr(argv), data.rb_threads);
+        let frames_count = rb_profile_thread_frames(
+            *rb_thread,
+            0,
+            MAX_STACK_DEPTH as i32,
+            buffer.as_mut_ptr(),
+            lines.as_mut_ptr(),
+        );
 
-            let frames_count = rb_profile_thread_frames(
-                rb_thread,
-                0,
-                MAX_STACK_DEPTH as i32,
-                buffer.as_mut_ptr(),
-                lines.as_mut_ptr(),
-            );
+        let mut j = 0;
+        // println!("frames_count={frames_count}");
 
-            let mut j = 0;
-            // println!("frames_count={frames_count}");
+        while j < frames_count {
+            let frame = buffer[j as usize];
+            iseq_buffer.push(frame);
+            // rb_profile_frame_full_label(frame as VALUE); // mainly cost
+            // rb_profile_frame_path(frame as VALUE);
 
-            while j < frames_count {
-                let frame = buffer[j as usize];
-                iseq_buffer.push(frame);
-                // rb_profile_frame_full_label(frame as VALUE); // mainly cost
-                // rb_profile_frame_path(frame as VALUE);
-
-                j += 1
-            }
-
-            i += 1;
+            j += 1
         }
 
         iseq_buffer.push_seperator();
@@ -137,12 +130,7 @@ fn get_current_thread_id() -> pthread_t {
 
 // start_scheduler creates a new thread through pthread_create which triggers stack scanning every millisecond.
 // threads: the threads to scan
-unsafe extern "C" fn start_scheduler(_module: VALUE, threads: VALUE) -> VALUE {
-    if let Ok(mut data) = SCHEDULER_DATA.write() {
-        data.thread = get_current_thread_id();
-        data.rb_threads = threads;
-    }
-
+unsafe extern "C" fn start_scheduler(_module: VALUE) -> VALUE {
     unsafe {
         let mut thread: pthread_t = zeroed();
 
@@ -165,12 +153,15 @@ fn print_counter() {
     println!("counter={}", get_counter_value());
 }
 
-unsafe extern "C" fn register_thread(_module: VALUE, threads: VALUE) -> VALUE {
+unsafe extern "C" fn register_thread(_module: VALUE) -> VALUE {
     let thread = get_current_thread_id();
     if let Ok(mut data) = SCHEDULER_DATA.write() {
         println!("push thread={thread}");
-        data.rb_threads = threads;
         data.threads.push(thread);
+
+        // Get the current Ruby thread VALUE
+        let rb_thread = rb_sys::rb_thread_current();
+        data.thread_to_value.insert(thread, rb_thread);
     }
 
     Qtrue as VALUE
@@ -197,7 +188,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         let m = rb_define_module("SdbSignal\0".as_ptr() as *const c_char);
 
         let start_scheduler_callback = std::mem::transmute::<
-            unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
+            unsafe extern "C" fn(VALUE) -> VALUE,
             unsafe extern "C" fn() -> VALUE,
         >(start_scheduler);
 
@@ -205,19 +196,19 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
             m,
             "start_scheduler\0".as_ptr() as _,
             Some(start_scheduler_callback),
-            1,
+            0,
         );
 
         let register_thread_callback = std::mem::transmute::<
-            unsafe extern "C" fn(VALUE, VALUE) -> VALUE,
+            unsafe extern "C" fn(VALUE) -> VALUE,
             unsafe extern "C" fn() -> VALUE,
         >(register_thread);
 
         rb_define_singleton_method(
             m,
-            "register_thread\0".as_ptr() as _,
+            "register_current_thread\0".as_ptr() as _,
             Some(register_thread_callback),
-            1,
+            0,
         );
     };
 
