@@ -8,7 +8,7 @@ use libc::{
 use magnus::{function, prelude::*, Error, Ruby};
 use rb_sys::{
     rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_frame_full_label,
-    rb_profile_frame_path, rb_profile_thread_frames, Qtrue, RARRAY_LEN, VALUE,
+    rb_profile_frame_path, rb_profile_frames, Qtrue, RARRAY_LEN, VALUE,
 };
 use std::collections::HashMap;
 use std::mem::zeroed;
@@ -58,35 +58,30 @@ fn get_counter_value() -> usize {
 unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
     COUNTER.fetch_add(1, Ordering::SeqCst);
 
-    if let Ok(data) = SCHEDULER_DATA.read() {
-        let rb_thread = data.thread_to_value.get(&get_current_thread_id()).unwrap();
+    let mut iseq_buffer = ISEQ_BUFFER.lock().unwrap();
+    let mut buffer = BUFFER.lock().unwrap();
+    let mut lines: std::sync::MutexGuard<'_, [i32; 2048]> = LINES.lock().unwrap();
 
-        let mut iseq_buffer = ISEQ_BUFFER.lock().unwrap();
-        let mut buffer = BUFFER.lock().unwrap();
-        let mut lines: std::sync::MutexGuard<'_, [i32; 2048]> = LINES.lock().unwrap();
+    let frames_count = rb_profile_frames(
+        0,
+        MAX_STACK_DEPTH as i32,
+        buffer.as_mut_ptr(),
+        lines.as_mut_ptr(),
+    );
 
-        let frames_count = rb_profile_thread_frames(
-            *rb_thread,
-            0,
-            MAX_STACK_DEPTH as i32,
-            buffer.as_mut_ptr(),
-            lines.as_mut_ptr(),
-        );
+    let mut j = 0;
+    // println!("frames_count={frames_count}");
 
-        let mut j = 0;
-        // println!("frames_count={frames_count}");
+    while j < frames_count {
+        let frame = buffer[j as usize];
+        iseq_buffer.push(frame);
+        // rb_profile_frame_full_label(frame as VALUE); // mainly cost
+        // rb_profile_frame_path(frame as VALUE);
 
-        while j < frames_count {
-            let frame = buffer[j as usize];
-            iseq_buffer.push(frame);
-            // rb_profile_frame_full_label(frame as VALUE); // mainly cost
-            // rb_profile_frame_path(frame as VALUE);
-
-            j += 1
-        }
-
-        iseq_buffer.push_seperator();
+        j += 1
     }
+
+    iseq_buffer.push_seperator();
 }
 
 fn setup_signal_handler() {
