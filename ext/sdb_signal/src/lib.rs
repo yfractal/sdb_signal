@@ -22,11 +22,34 @@ use crate::buffer::*;
 
 const MAX_STACK_DEPTH: usize = 2048;
 const ONE_MILLISECOND_NS: u64 = 1_000_000; // 1ms in nanoseconds
+const RING_BUFFER_SIZE: usize = 1024 * 1024; // 1M entries
+
+// Lock-free ring buffer for storing profiling data
+struct RingBuffer {
+    data: Box<[AtomicUsize; RING_BUFFER_SIZE]>,
+    write_pos: AtomicUsize,
+}
+
+impl RingBuffer {
+    fn new() -> Self {
+        let mut data = Vec::with_capacity(RING_BUFFER_SIZE);
+        for _ in 0..RING_BUFFER_SIZE {
+            data.push(AtomicUsize::new(0));
+        }
+        Self {
+            data: data.into_boxed_slice().try_into().unwrap(),
+            write_pos: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, value: usize) {
+        let pos = self.write_pos.fetch_add(1, Ordering::Relaxed) % RING_BUFFER_SIZE;
+        self.data[pos].store(value, Ordering::Relaxed);
+    }
+}
 
 lazy_static! {
-    static ref BUFFER: Mutex<[VALUE; MAX_STACK_DEPTH]> = Mutex::new([0 as VALUE; MAX_STACK_DEPTH]);
-    static ref LINES: Mutex<[i32; MAX_STACK_DEPTH]> = Mutex::new([0; MAX_STACK_DEPTH]);
-    static ref ISEQ_BUFFER: Mutex<Buffer> = Mutex::new(Buffer::new());
+    static ref PROFILING_BUFFER: RingBuffer = RingBuffer::new();
     static ref COUNTER: AtomicUsize = AtomicUsize::new(0);
     static ref SAMPLING_INTERVAL_NS: AtomicUsize = AtomicUsize::new(ONE_MILLISECOND_NS as usize);
 }
@@ -52,36 +75,35 @@ fn get_counter_value() -> usize {
     COUNTER.load(Ordering::SeqCst)
 }
 
-// stack_scanner fetches all frames through `rb_profile_thread_frames`
-// and queries the frame's full label and frame path.
-// But, it does not log this data.
-unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    COUNTER.fetch_add(1, Ordering::SeqCst);
+// Temporary buffer for stack frames in the signal handler
+static mut TEMP_BUFFER: [VALUE; MAX_STACK_DEPTH] = [0; MAX_STACK_DEPTH];
+static mut TEMP_LINES: [i32; MAX_STACK_DEPTH] = [0; MAX_STACK_DEPTH];
 
-    let mut iseq_buffer = ISEQ_BUFFER.lock().unwrap();
-    let mut buffer = BUFFER.lock().unwrap();
-    let mut lines: std::sync::MutexGuard<'_, [i32; 2048]> = LINES.lock().unwrap();
+// stack_scanner fetches all frames through `rb_profile_thread_frames`
+// and stores them in the lock-free ring buffer
+unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let frames_count = rb_profile_frames(
         0,
         MAX_STACK_DEPTH as i32,
-        buffer.as_mut_ptr(),
-        lines.as_mut_ptr(),
+        TEMP_BUFFER.as_mut_ptr(),
+        TEMP_LINES.as_mut_ptr(),
     );
 
+    // Store frame count
+    PROFILING_BUFFER.push(frames_count as usize);
+
+    // Store frames
     let mut j = 0;
-    // println!("frames_count={frames_count}");
-
     while j < frames_count {
-        let frame = buffer[j as usize];
-        iseq_buffer.push(frame);
-        // rb_profile_frame_full_label(frame as VALUE); // mainly cost
-        // rb_profile_frame_path(frame as VALUE);
-
-        j += 1
+        let frame = TEMP_BUFFER[j as usize];
+        PROFILING_BUFFER.push(frame as usize);
+        j += 1;
     }
 
-    iseq_buffer.push_seperator();
+    // Push separator
+    PROFILING_BUFFER.push(usize::MAX);
 }
 
 fn setup_signal_handler() {
