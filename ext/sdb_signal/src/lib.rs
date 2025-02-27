@@ -7,7 +7,7 @@ use libc::{
 };
 use magnus::{function, prelude::*, Error, Ruby};
 use rb_sys::{
-    rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_frame_full_label,
+    rb_define_module, rb_define_singleton_method, rb_int2inum, rb_profile_frame_full_label, rb_during_gc,
     rb_profile_frame_path, rb_profile_frames, Qtrue, RARRAY_LEN, VALUE,
 };
 use std::collections::HashMap;
@@ -82,6 +82,10 @@ static mut TEMP_LINES: [i32; MAX_STACK_DEPTH] = [0; MAX_STACK_DEPTH];
 // stack_scanner fetches all frames through `rb_profile_thread_frames`
 // and stores them in the lock-free ring buffer
 unsafe extern "C" fn stack_scanner(_: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    if rb_during_gc() != 0 {
+        return;
+    }
+
     COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let frames_count = rb_profile_frames(
